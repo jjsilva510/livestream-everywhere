@@ -1,0 +1,112 @@
+LIVESTREAM CONTROL PANEL - WINDOWS ONE-CLICK SETUP
+====================================================
+
+The GO LIVE / END STREAM panel runs on the Ubuntu box (port 8765) and is now
+LAN-reachable. Windows just needs a bookmark/launcher pointing at it.
+
+STEP 0 - SSH PREREQS ON THE UBUNTU BOX (one time, run in a terminal there)
+--------------------------------------------------------------------------
+Hermes lives on the Ubuntu box. To launch it from Windows over SSH you need:
+
+    sudo apt install openssh-server
+    sudo systemctl enable --now ssh
+    sudo ufw allow from <YOUR_LAN_SUBNET> to any port 22 proto tcp
+    sudo ufw allow from <YOUR_LAN_SUBNET> to any port 8765 proto tcp comment 'livestream panel LAN'
+
+(Verified 2026-09-12: sshd was NOT installed yet; the 8765 rule above was also
+missing — that's why the TCP tests in Step 1 failed.)
+
+Passwordless login (recommended): get your Windows user's OpenSSH PUBLIC key
+onto the Ubuntu box. On Windows, if you have no key yet:
+
+    ssh-keygen -t ed25519
+
+then paste the contents of C:\Users\Jefizzle\.ssh\id_ed25519.pub into
+~/.ssh/authorized_keys on Ubuntu (or run, from Windows, once password SSH works):
+
+    type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh <user>@<PANEL_HOST_IP> "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+
+STEP 1 - FIND WHICH IP WORKS
+----------------------------
+Open PowerShell on Windows and run each:
+
+    Test-NetConnection <WINBOX_IP> -Port 8765
+    Test-NetConnection <PANEL_HOST_IP> -Port 8765
+
+(Results from 2026-09-12, both FAILED:
+ - .41 (Ubuntu Wi-Fi): ping unreachable -> that address moved; the Ubuntu box's
+   Wi-Fi DHCP lease changed. Don't rely on it.
+ - .18 (Ubuntu Ethernet): ping OK but TCP blocked -> ufw had no rule for 8765.
+   Fix = the ufw line in Step 0. Re-run after that; expect
+   TcpTestSucceeded : True on .18.)
+
+Also useful:
+PS C:\Users\Jefizzle> ipconfig
+
+Windows IP Configuration
+
+
+Ethernet adapter Ethernet:
+
+   Connection-specific DNS Suffix  . :
+   IPv6 Address. . . . . . . . . . . : fdf3:2033:e293:4ae9:2e44:21f9:4b67:b75e
+   Temporary IPv6 Address. . . . . . : fdf3:2033:e293:4ae9:f982:687c:a5ac:388f
+   Link-local IPv6 Address . . . . . : fe80::4ba9:5567:5218:c7a3%18
+   IPv4 Address. . . . . . . . . . . : <PANEL_HOST_IP>
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : <ROUTER_IP>
+
+NOTE: as of 2026-09-12 BOTH machines sit on <PANEL_HOST_IP> (Windows Ethernet AND
+Ubuntu enp9s0) — an IP collision. The router handed out the same lease twice.
+Fix: give the Ubuntu box a DHCP reservation (its enp9s0 MAC) or set a static IP
+on one of the two, otherwise neither machine is reliably reachable. Until then,
+use whichever IP survives: `ping -n 3 <IP>` then check `arp -a` for the right MAC.
+
+Whichever shows "TcpTestSucceeded : True" is your IP. Use it in Step 2.
+
+If BOTH fail:
+  - The panel service may need a restart on Ubuntu:
+        systemctl --user restart livestream-control
+  - Firewall: on Ubuntu run
+        sudo ufw allow from <YOUR_LAN_SUBNET> to any port 8765 proto tcp
+
+STEP 2A - ONE-CLICK LAUNCHER: HERMES AGENT (SSH)
+------------------------------------------------
+Easiest: use this file — double-click "hermes-agent.bat" sitting next to this
+txt (works whether it's run from the USB drive or copied to the Desktop).
+
+Or make your own shortcut: right-click Desktop > New > Shortcut, enter
+(replace <PANEL_HOST_IP> with the working IP from Step 1):
+
+    wt.exe ssh -t <user>@<PANEL_HOST_IP> "cd ~/Documents/livestream-everywhere && hermes"
+
+(If you don't have Windows Terminal, use: cmd /k ssh -t <user>@<PANEL_HOST_IP> "cd ~/Documents/livestream-everywhere && hermes")
+
+Name it "Hermes Agent". Double-click = a terminal opens already running Hermes
+on the Ubuntu box. With the Step 0 key setup it asks for no password.
+
+STEP 2B - ONE-CLICK LAUNCHER: GO LIVE PANEL (browser)
+-----------------------------------------------------
+Replace IP with the working one from Step 1. Right-click Desktop > New >
+Shortcut, enter:
+
+    rundll32 url.dll,FileProtocolHandler http://IP:8765/
+
+Name it "Go Live Panel". Double-click = opens the panel in your default browser.
+
+STEP 3 - OBS BROWSER SOURCE (optional, for showing status on stream)
+--------------------------------------------------------------------
+In OBS: Add > Browser source, URL:
+
+    http://IP:8765/watch
+
+(or the full panel at http://IP:8765/ if you want the buttons visible)
+
+NOTES
+-----
+- Panel UI: http://IP:8765/  (GO LIVE / END STREAM button + OBS ingest indicator)
+- Watch page: http://IP:8765/watch.html
+- The server signs Nostr announcements and checks MediaMTX on the VPS
+  server-side, so nothing extra needs to run on Windows.
+- If the Ubuntu machine's IP changes after a reboot, redo Step 1 (it has been
+  .41 on Wi-Fi / .18 on Ethernet). Get a DHCP reservation to stop this churn.

@@ -1,0 +1,124 @@
+import type { Event, EventTemplate, VerifiedEvent } from './core.ts';
+import { type Filter } from './filter.ts';
+export type AbstractRelayConstructorOptions = {
+    verifyEvent: (event: Event, url: string) => boolean;
+    websocketImplementation?: typeof WebSocket;
+    enablePing?: boolean;
+    enableReconnect?: boolean;
+    idleTimeout?: number;
+};
+export declare class SendingOnClosedConnection extends Error {
+    constructor(message: string, relay: string);
+}
+export declare class AbstractRelay {
+    readonly url: string;
+    private _connected;
+    onclose: (() => void) | null;
+    onnotice: (msg: string) => void;
+    onauth: undefined | ((evt: EventTemplate) => Promise<VerifiedEvent>);
+    baseEoseTimeout: number;
+    publishTimeout: number;
+    pingFrequency: number;
+    pingTimeout: number;
+    resubscribeBackoff: number[];
+    openSubs: Map<string, Subscription>;
+    enablePing: boolean | undefined;
+    enableReconnect: boolean;
+    idleTimeout: number;
+    idleSince: number | undefined;
+    ongoingOperations: number;
+    private reconnectTimeoutHandle;
+    private pingIntervalHandle;
+    private reconnectAttempts;
+    private skipReconnection;
+    private idleTimeoutHandle;
+    private connectionPromise;
+    private openCountRequests;
+    private openEventPublishes;
+    private ws;
+    private challenge;
+    private authPromise;
+    private serial;
+    private verifyEvent;
+    private _WebSocket;
+    constructor(url: string, opts: AbstractRelayConstructorOptions);
+    static connect(url: string, opts: AbstractRelayConstructorOptions & Parameters<AbstractRelay['connect']>[0]): Promise<AbstractRelay>;
+    private closeAllSubscriptions;
+    get connected(): boolean;
+    private clearIdleTimeout;
+    scheduleIdleClose(): void;
+    private reconnect;
+    private handleHardClose;
+    connect(opts?: {
+        timeout?: number;
+        abort?: AbortSignal;
+    }): Promise<void>;
+    private waitForPingPong;
+    private waitForDummyReq;
+    private pingpong;
+    send(message: string): Promise<void>;
+    auth(signAuthEvent: (evt: EventTemplate) => Promise<VerifiedEvent>): Promise<string>;
+    publish(event: Event): Promise<string>;
+    count(filters: Filter[], params: {
+        id?: string | null;
+    }): Promise<number>;
+    countWithHLL(filters: Filter[], params: {
+        id?: string | null;
+    }): Promise<{
+        count: number;
+        hll?: string;
+    }>;
+    subscribe(filters: Filter[], params: Partial<SubscriptionParams> & {
+        label?: string;
+        id?: string;
+    }): Subscription;
+    prepareSubscription(filters: Filter[], params: Partial<SubscriptionParams> & {
+        label?: string;
+        id?: string;
+    }): Subscription;
+    close(): void;
+    _onmessage(ev: MessageEvent<any>): void;
+}
+export declare class Subscription {
+    readonly relay: AbstractRelay;
+    readonly id: string;
+    lastEmitted: number | undefined;
+    closed: boolean;
+    eosed: boolean;
+    filters: Filter[];
+    alreadyHaveEvent: ((id: string) => boolean) | undefined;
+    receivedEvent: ((relay: AbstractRelay, id: string) => void) | undefined;
+    onevent: (evt: Event) => void;
+    oninvalidevent: ((evt: unknown) => void) | undefined;
+    oneose: (() => void) | undefined;
+    onclose: ((reason: string) => void) | undefined;
+    oncustom: ((msg: string[]) => void) | undefined;
+    eoseTimeout: number;
+    private eoseTimeoutHandle;
+    constructor(relay: AbstractRelay, id: string, filters: Filter[], params: SubscriptionParams);
+    fire(): void;
+    receivedEose(): void;
+    close(reason?: string): void;
+}
+export type SubscriptionParams = {
+    onevent?: (evt: Event) => void;
+    oninvalidevent?: (evt: unknown) => void;
+    oneose?: () => void;
+    onclose?: (reason: string) => void;
+    alreadyHaveEvent?: (id: string) => boolean;
+    receivedEvent?: (relay: AbstractRelay, id: string) => void;
+    eoseTimeout?: number;
+    abort?: AbortSignal;
+};
+export type CountResolver = {
+    resolve: (payload: {
+        count: number;
+        hll?: string;
+    }) => void;
+    reject: (err: Error) => void;
+};
+export type EventPublishResolver = {
+    resolve: (reason: string) => void;
+    reject: (err: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+};

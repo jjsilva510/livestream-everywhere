@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Livestream Everywhere — Go Live Control</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background:#14161a; color:#e8e8ea; margin:0; padding:32px; }
+  .card { max-width:560px; margin:0 auto; background:#1d2026; border:1px solid #2c3038; border-radius:14px; padding:28px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#9aa0aa; font-size:13px; margin-bottom:22px; }
+  label { display:block; font-size:12px; color:#9aa0aa; margin:14px 0 4px; }
+  input { width:100%; box-sizing:border-box; background:#14161a; color:#e8e8ea; border:1px solid #2c3038; border-radius:8px; padding:10px; font-size:14px; }
+  button { width:100%; margin-top:22px; padding:16px; font-size:17px; font-weight:700; border:none; border-radius:10px; cursor:pointer; }
+  #go { background:#e0453f; color:#fff; }
+  #go.live { background:#3f8ae0; }
+  #go:disabled { opacity:.5; cursor:wait; }
+  #connect { background:#f7931a; color:#14161a; margin-top:14px; padding:13px; font-size:15px; }
+  #connect:disabled { opacity:.5; cursor:wait; }
+  #connect.done { background:#2b313a; color:#5cc98a; }
+  .status { margin-top:18px; font-size:13px; min-height:20px; white-space:pre-wrap; }
+  .ok { color:#5cc98a; } .err { color:#e07a5f; } .warn { color:#d9b45c; }
+  .hint { margin-top:20px; font-size:12px; color:#767c86; line-height:1.5; border-top:1px solid #2c3038; padding-top:14px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#555; margin-right:6px; }
+  .dot.on { background:#5cc98a; } .dot.off { background:#e0453f; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🔴 Livestream Everywhere</h1>
+  <div class="sub">one-click NIP-53 announce · watch page: <a id="watchlink" href="#" target="_blank" style="color:#8ab4e8">(configured in config.json)</a></div>
+
+  <label>Stream title</label>
+  <input id="title" value="" placeholder="What are we streaming?">
+  <label>HLS URL (what viewers & nostr clients pull)</label>
+  <input id="hls" value="" placeholder="https://your-domain/live/<b>path</b>/index.m3u8 (pre-filled from config.json)">
+
+  <button id="connect">🔑 SIGN IN WITH ALBY</button>
+  <button id="go" disabled>GO LIVE</button>
+  <div class="status" id="status"></div>
+  <div id="nip07note" class="status warn" style="display:none"></div>
+
+  <div class="hint">
+    Order of operations:<br>
+    1. OBS → Start Streaming (your scenes/audio all work as usual)<br>
+    2. This page → GO LIVE (publishes the nostr announcement)<br>
+    3. When done: this page → END STREAM, then stop OBS.<br>
+    Signing: Alby (NIP-07) in the browser if present, otherwise the server-side key.<br>
+    <span id="obsstate">OBS ingest: checking…</span>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const say = (msg, cls='') => { $('status').textContent = msg; $('status').className = 'status ' + cls; };
+let isLive = false, liveD = null;
+
+let RELAYS = ['wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io'];
+
+// Pre-fill from server config (config.json on the panel host)
+fetch('/api/config').then(r => r.json()).then(c => {
+  if (Array.isArray(c.relays) && c.relays.length) RELAYS = c.relays;
+  if (c.hls_url && !$('hls').value) $('hls').value = c.hls_url;
+  if (c.watch_base) { const a = $('watchlink'); a.href = c.watch_base; try { a.textContent = new URL(c.watch_base).host; } catch(e) { a.textContent = c.watch_base; } }
+  if (c.default_title) $('title').placeholder = c.default_title;
+}).catch(() => {});
+
+// --- minimal bech32 (BIP-173) so we can show the connected npub ---
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+function bech32Polymod(values) {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) { const b = chk >> 25; chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= GEN[i]; }
+  return chk >>> 0;
+}
+function hrpExpand(hrp) {
+  const a = []; for (let i = 0; i < hrp.length; i++) a.push(hrp.charCodeAt(i) >> 5);
+  a.push(0); for (let i = 0; i < hrp.length; i++) a.push(hrp.charCodeAt(i) & 31);
+  return a;
+}
+function bech32Encode(hrp, data5) {
+  const values = hrpExpand(hrp).concat(data5).concat([0,0,0,0,0,0]);
+  const mod = bech32Polymod(values) ^ 1;
+  const checksum = []; for (let i = 0; i < 6; i++) checksum.push((mod >> (5 * (5 - i))) & 31);
+  return hrp + '1' + data5.concat(checksum).map(d => BECH32_CHARSET[d]).join('');
+}
+function convertBits(data, from, to, pad) {
+  let acc = 0, bits = 0; const ret = [], maxv = (1 << to) - 1;
+  for (const v of data) { acc = (acc << from) | v; bits += from;
+    while (bits >= to) { bits -= to; ret.push((acc >> bits) & maxv); } }
+  if (pad && bits > 0) ret.push((acc << (to - bits)) & maxv);
+  return ret;
+}
+function toNpub(hex) {
+  const bytes = []; for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+  return bech32Encode('npub', convertBits(bytes, 8, 5, true));
+}
+
+// NIP-07 extensions only exist in secure contexts (https:// or localhost)
+function secureContext() { return location.protocol === 'https:' || location.hostname === 'localhost'; }
+
+// ---- sign-in gate: GO LIVE stays locked until Alby is connected ----
+let npubHex = null; // pubkey of the connected Alby account (client-side mode only)
+function hasNip07() { return !!(window.nostr && window.nostr.signEvent); }
+
+function setGateReady() {
+  const el = $('nip07note'); el.style.display = 'none';
+  $('connect').classList.add('done');
+  $('connect').textContent = '🔑 ALBY CONNECTED · npub' + toNpub(npubHex).slice(5, 15) + '…';
+  $('go').disabled = false;
+  say(secureContext()
+    ? 'signed in with Alby — start OBS streaming, then GO LIVE.'
+    : 'signed in with Alby (server-key fallback still in effect: page is not localhost/https).', 'ok');
+}
+function lockGate(msg, cls) {
+  npubHex = null;
+  $('go').disabled = true;
+  $('connect').classList.remove('done');
+  $('connect').textContent = '🔑 SIGN IN WITH ALBY';
+  if (msg) say(msg, cls || 'warn');
+}
+
+async function signIn() {
+  $('connect').disabled = true;
+  try {
+    if (!secureContext()) {
+      // localhost/https required for Alby to be visible at all
+      const el = $('nip07note');
+      el.textContent = 'NIP-07 (Alby) signing needs localhost or https — open http://localhost:8765 on this machine. GO LIVE will use the server-side key.';
+      el.style.display = 'block';
+      $('go').disabled = false; // allow keyless fallback in this non-secure case
+      $('connect').disabled = false;
+      return;
+    }
+    if (!hasNip07()) { lockGate('no NIP-07 signer found — is the Alby extension enabled in Brave?'); $('connect').disabled = false; return; }
+    const pk = await window.nostr.getPublicKey(); // Alby popup: connect this site
+    npubHex = pk;
+    setGateReady();
+  } catch (e) {
+    lockGate('Alby sign-in failed or was cancelled: ' + e.message, 'err');
+  }
+  $('connect').disabled = false;
+}
+
+function checkNip07() {
+  const el = $('nip07note');
+  if (!hasNip07()) {
+    el.textContent = 'no NIP-07 signer (window.nostr) — events will be signed by the local server key.'
+      + (secureContext() ? ' Install/enable Alby to sign in the browser.' :
+        ' NIP-07 (Alby) signing needs localhost or https — open http://localhost:8765 on this machine. Using server-side key fallback.');
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function checkIngest() {
+  const el = $('obsstate');
+  try {
+    const r = await (await fetch('/api/ingest')).json();
+    if (!r.ok) { el.textContent = 'OBS ingest: server offline (run livestream-server.py)'; return; }
+    el.innerHTML = r.pushing
+      ? `<span class="dot on"></span>OBS ingest: LIVE (${r.live_paths.join(', ')}) — good to announce`
+      : `<span class="dot off"></span>OBS ingest: nothing arriving yet — start OBS streaming first`;
+  } catch (e) { el.textContent = 'OBS ingest: unknown (open via localhost:8765)'; }
+}
+
+// Publish one signed event to each relay over WebSocket; resolve per-relay status.
+// 'accepted' when the OK message carries a true flag; 8s timeout per relay.
+function publishToRelay(url, signed) {
+  return new Promise(resolve => {
+    let settled = false, ws = null;
+    const done = s => { if (settled) return; settled = true; try { ws && ws.close(); } catch (e) {} resolve(s); };
+    try { ws = new WebSocket(url); } catch (e) { return done('error: ' + e.message); }
+    const t = setTimeout(() => done('timeout'), 8000);
+    ws.addEventListener('open', () => { try { ws.send(JSON.stringify(['EVENT', signed])); } catch (e) { clearTimeout(t); done('error: ' + e.message); } });
+    ws.addEventListener('message', ev => {
+      try {
+        const m = JSON.parse(ev.data);
+        if (Array.isArray(m) && m[0] === 'OK') {
+          clearTimeout(t);
+          done(m[2] === true ? 'accepted' : 'rejected: ' + (m[3] || 'no reason'));
+        }
+      } catch (e) { /* ignore unparseable frames */ }
+    });
+    ws.addEventListener('error', () => { clearTimeout(t); done('error'); });
+    ws.addEventListener('close', () => { clearTimeout(t); done('closed'); });
+  });
+}
+
+async function publishRelays(signed) {
+  const results = await Promise.all(RELAYS.map(async (url) => [url, await publishToRelay(url, signed)]));
+  return { id: signed.id, pubkey: signed.pubkey, results };
+}
+
+// Primary path: event is signed client-side by the already-connected Alby account.
+async function announceNip07() {
+  const title = $('title').value || 'Livestream Everywhere';
+  const hlsUrl = $('hls').value;
+  const created_at = Math.floor(Date.now() / 1000);
+  const event = {
+    kind: 30311,
+    created_at,
+    tags: isLive
+      ? [['d', liveD], ['status', 'ended']]
+      : [['d', liveD], ['title', title], ['streaming', hlsUrl], ['status', 'live'], ['starts', String(created_at)], ['t', 'livestream']],
+    content: ''
+  };
+  const signed = await window.nostr.signEvent(event);
+  const r = await publishRelays(signed);
+  finishAnnounce(r);
+}
+
+// Fallback path: existing server endpoint, unchanged.
+async function announceServer() {
+  const q = new URLSearchParams({ mode: isLive ? 'stop' : 'start', d: liveD,
+    title: $('title').value || 'Livestream Everywhere', hls: $('hls').value });
+  const r = await (await fetch('/api/announce?' + q)).json();
+  if (r.error) { say('error: ' + r.error, 'err'); $('go').disabled = false; return; }
+  finishAnnounce(r);
+}
+
+function finishAnnounce(r) {
+  const okN = r.results.filter(([,s])=>s==='accepted').length;
+  const relayLine = r.results.map(([u,s])=>u.replace('wss://','')+' '+s).join(', ');
+  if (isLive) {
+    isLive = false; liveD = null;
+    $('go').textContent = 'GO LIVE'; $('go').classList.remove('live');
+    if (okN > 0) say('stream ended (' + okN + '/3 relays). Now stop OBS.', 'warn');
+    else say('ended but no relay accepted: ' + relayLine, 'err');
+  } else if (okN > 0) {
+    isLive = true;
+    $('go').textContent = 'END STREAM'; $('go').classList.add('live');
+    say(`LIVE ✓ announced on ${okN}/3 relays (event ${r.id.slice(0,10)}…)\npubkey ${r.pubkey.slice(0,16)}… — followers open this npub in any nostr client`, 'ok');
+  } else {
+    say('relays said no: ' + relayLine, 'err');
+  }
+  $('go').disabled = false;
+}
+
+async function goLive() {
+  // gate check: NIP-07 sessions require a prior SIGN IN WITH ALBY
+  if (secureContext() && hasNip07() && !npubHex) {
+    say('sign in with Alby first (orange button above).', 'warn');
+    return;
+  }
+  $('go').disabled = true;
+  try {
+    if (!isLive && !confirm('Is OBS already streaming?\n\nOK = yes, announce now.\nCancel = go start OBS first.')) { $('go').disabled = false; return; }
+    liveD = liveD || 'live-' + Date.now();
+    if (npubHex) {
+      await announceNip07();
+    } else {
+      await announceServer();
+    }
+  } catch (e) { say('error: ' + e.message, 'err'); $('go').disabled = false; }
+}
+
+$('go').onclick = goLive;
+$('connect').onclick = signIn;
+$('title').value = localStorage.getItem('livestream.lastTitle') || '';
+$('title').addEventListener('input', e => localStorage.setItem('livestream.lastTitle', e.target.value));
+setInterval(checkIngest, 5000); checkIngest();
+checkNip07();
+if (secureContext() && hasNip07()) {
+  lockGate('step 1: SIGN IN WITH ALBY (above) before you can GO LIVE.');
+} else {
+  say('ready. start OBS streaming first, then hit GO LIVE.');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+import type { Event } from './core.ts';
+import type { Filter } from './filter.ts';
+export type CountManyDirective = 'reactions' | 'reposts' | 'quotes' | 'replies' | 'comments' | 'followers';
+export declare function getCountManyFilter(target: string, directive: CountManyDirective): Filter;
+export declare function newHll(): Uint8Array;
+export declare function hllDecode(hex: string): Uint8Array | undefined;
+export declare function hllEncode(registers: Uint8Array): string;
+export declare function computeOffset(filterFirstTagValue: string): number;
+export declare function getFilterFirstTagValue(filter: Filter): string | undefined;
+export declare function feedPubkey(hll: Uint8Array, pubkey: string, offset: number): Uint8Array;
+export declare function feedEvent(hll: Uint8Array, event: Event, offset: number): Uint8Array;
+export declare function mergeHll(target: Uint8Array, source: Uint8Array): Uint8Array;
+export declare function estimateCount(hll: Uint8Array): number;

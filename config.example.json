@@ -1,0 +1,11 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8765,
+  "vps_ssh": "root@your-vps-ip",
+  "mediamtx_api_url": "http://127.0.0.1:9998/v3/paths/list",
+  "hls_base": "https://your-domain.example/live/",
+  "stream_path": "index",
+  "default_title": "Livestream Everywhere",
+  "relays": ["wss://relay.primal.net", "wss://nos.lol", "wss://relay.damus.io"],
+  "key_file": "~/.config/nostr-live/privkey.hex"
+}

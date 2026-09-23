@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Livestream Everywhere — watch</title>
+<style>body{margin:0;background:#000;color:#ccc;font-family:system-ui,sans-serif}video{width:100%;max-height:80vh}h1{font-size:15px;padding:12px 16px;margin:0;font-weight:600}</style>
+</head><body>
+<h1>🔴 Livestream Everywhere</h1>
+<video id="v" controls autoplay muted playsinline></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<script>
+function start(src) {
+  const v = document.getElementById('v');
+  if (!src) { v.insertAdjacentHTML('afterend', '<p style="padding:0 16px">No HLS URL configured — set <code>hls_base</code> + <code>stream_path</code> in config.json.</p>'); return; }
+  if (Hls.isSupported()) { const h = new Hls(); h.loadSource(src); h.attachMedia(v); h.on(Hls.Events.ERROR,(e,d)=>{ if(d.fatal){ setTimeout(()=>location.reload(), 4000);} }); }
+  else if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = src; }
+}
+fetch('/api/config').then(r => r.json()).then(c => start(c.hls_url)).catch(() => start(''));
+</script>
+</body></html>
