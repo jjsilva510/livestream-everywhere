@@ -1,5 +1,11 @@
 # Livestream Everywhere
 
+<p align="center">
+  <img src="assets/hero.png" alt="A lone broadcast tower beaming a constellation network across the night sky" width="900">
+</p>
+
+*Hero art generated locally with Z-Image-Turbo on a DGX Spark — the stack makes its own marketing.*
+
 **Own your broadcast.** One click in a browser takes you live on [Nostr](https://nostr.com) —
 your stream, your VPS, your domain, your keys. No platform login, no paywall that appears
 mid-stream, no frontend that redesigns itself out from under you.
