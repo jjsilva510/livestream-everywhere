@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 *.hex
 .env
+studio-config.json
+studio/data/
+thumbs/
+live-state.json

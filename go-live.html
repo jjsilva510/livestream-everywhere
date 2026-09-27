@@ -26,19 +26,53 @@
 </style>
 </head>
 <body>
+<div id="tabs" style="max-width:960px;margin:0 auto 14px;display:flex;gap:8px;">
+  <button class="tab on" data-v="live">🔴 Go Live</button>
+  <button class="tab" data-v="studio">🎨 Jefizzle Studio</button>
+</div>
+<style>
+  .tab { width:auto !important; margin-top:0 !important; padding:9px 16px !important; font-size:13px !important;
+         background:#1d2026; color:#9aa0aa; border:1px solid #2c3038; border-radius:9px; }
+  .tab.on { background:#2b313a; color:#e8e8ea; border-color:#3f8ae0; }
+  #view-studio { max-width:960px; margin:0 auto; }
+  #view-studio.show { display:block; }
+  #view-studio:not(.show) { display:none; }
+  #view-live.hidden { display:none; }
+  #studioFrame { width:100%; height:calc(100vh - 120px); border:1px solid #2c3038; border-radius:14px; background:#14161a; }
+</style>
+<div id="view-live">
 <div class="card">
   <h1>🔴 Livestream Everywhere</h1>
-  <div class="sub">one-click NIP-53 announce · watch page: <a id="watchlink" href="#" target="_blank" style="color:#8ab4e8">(configured in config.json)</a></div>
+  <div class="sub">one-click NIP-53 announce · watch page: <a id="watchlink" href="#" target="_blank" style="color:#8ab4e8">(configured in config.json)</a> · studio art: <a id="studiolink" href="#" target="_blank" style="color:#8ab4e8">Jefizzle Studio →</a></div>
 
   <label>Stream title</label>
   <input id="title" value="" placeholder="What are we streaming?">
   <label>HLS URL (what viewers & nostr clients pull)</label>
   <input id="hls" value="" placeholder="https://your-domain/live/<b>path</b>/index.m3u8 (pre-filled from config.json)">
 
+  <label>Stream thumbnail — drag &amp; drop an image (or click to pick). Published to a public URL, carried in the NIP-53 <code>image</code> tag</label>
+  <div id="drop" style="border:2px dashed #3a4150; border-radius:8px; padding:10px; text-align:center; font-size:12px; color:#8a93a6; cursor:pointer; margin:4px 0;">
+    drop JPG/PNG here or click to browse
+    <div id="dropPreview" style="display:none; margin-top:6px;"><img id="dropImg" style="max-width:100%; max-height:150px; border-radius:6px; display:block; margin:0 auto;"><div id="dropMeta" style="margin-top:4px; word-break:break-all;"></div></div>
+    <input type="file" id="filePick" accept="image/*" style="display:none;">
+  </div>
+  <input id="thumbInput" value="" placeholder="or paste a public https image URL directly">
+
   <button id="connect">🔑 SIGN IN WITH ALBY</button>
   <button id="go" disabled>GO LIVE</button>
   <div class="status" id="status"></div>
   <div id="nip07note" class="status warn" style="display:none"></div>
+
+  <div id="studioCard" style="display:none; margin-top:14px; border:1px solid #2c3038; border-radius:8px; padding:10px 12px;">
+    <label style="margin-top:0">Studio art → OBS browser source</label>
+    <div id="studioItems" style="font-size:12px; line-height:1.5;"></div>
+    <div class="sub" style="margin-top:6px">Paste a URL into OBS as a Browser Source (or download the PNG). Served by Jefizzle Studio on this LAN.</div>
+    <div id="thumbRow" style="margin-top:8px; font-size:12px;">
+      <label style="margin-top:0">Stream thumbnail (NIP-53 image tag)</label>
+      <div id="thumbState" class="sub">none selected — zapstream/clients will show their default pic</div>
+      <button id="thumbPick" style="font-size:11px; margin-top:4px">🖼 use latest studio still as thumbnail</button>
+    </div>
+  </div>
 
   <div class="hint">
     Order of operations:<br>
@@ -49,11 +83,65 @@
     <span id="obsstate">OBS ingest: checking…</span>
   </div>
 </div>
+</div><!-- /#view-live -->
+
+<div id="view-studio">
+  <iframe id="studioFrame" src="about:blank" title="Jefizzle Studio"></iframe>
+  <div class="sub" id="studioNote" style="text-align:center;margin-top:8px;display:none"></div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
 const say = (msg, cls='') => { $('status').textContent = msg; $('status').className = 'status ' + cls; };
+let thumbUrl = null;
+let studioMounted = false;  // set by /api/studio-state probe below
 let isLive = false, liveD = null;
+// recover from a panel restart / page reload: server keeps the last accepted d-tag
+let restoredImage = null;
+async function restoreLiveState() {
+  try {
+    const st = await (await fetch('/api/live-state')).json();
+    if (st.live && st.d) {
+      isLive = true; liveD = st.d; restoredImage = st.image || null;
+      if (restoredImage) thumbUrl = restoredImage;
+      $('go').textContent = 'END STREAM'; $('go').classList.add('live');
+      const repub = `<button id="repub" style="font-size:11px;margin-left:8px">re-announce (same d)</button>`;
+      say(`LIVE ✓ (restored — announced ${new Date((st.since||0)*1000).toLocaleTimeString()} as ${st.d}). END STREAM will revoke it even after a restart.${repub}`, 'ok');
+      const b = $('repub'); if (b) b.onclick = async () => {
+        b.textContent = '…';
+        const q = new URLSearchParams({mode:'start', d: liveD, title: $('title').value || 'Livestream Everywhere', hls: $('hls').value});
+        if (thumbUrl) q.set('image', thumbUrl);
+        const r = await (await fetch('/api/announce?' + q)).json();
+        const okN = (r.results||[]).filter(x=>x[1]==='accepted').length;
+        b.textContent = okN ? `re-published ${okN}/3` : 'relays not accepting';
+      };
+    }
+  } catch(e) {}
+}
+restoreLiveState().then(() => {
+  if (!isLive) {
+    const saved = localStorage.getItem('livestream.liveD');
+    if (saved) {
+      isLive = true; liveD = saved;
+      $('go').textContent = 'END STREAM'; $('go').classList.add('live');
+      say(`LIVE ✓ (restored from this browser — announced as ${saved}). END STREAM will revoke it here.`, 'ok');
+      return;
+    }
+    // Offer manual recovery when the live event was signed in a DIFFERENT browser/machine:
+    // any d-tag can be revoked from here as long as we can sign for our npub (server key or Alby).
+    const rec = document.createElement('div');
+    rec.style.cssText = 'margin-top:8px;font-size:12px;color:#767c86';
+    rec.innerHTML = 'Stream still showing live elsewhere? <button id="manualEnd" style="font-size:11px">enter stream id to end it</button>';
+    document.querySelector('.hint').before(rec);
+    $('manualEnd').onclick = () => {
+      const dIn = prompt('d-tag of the live listing (shown in the restored banner of the other tab, e.g. "live-1790198259282"):');
+      if (!dIn) return;
+      isLive = true; liveD = dIn.trim();
+      $('go').disabled = false;
+      goLive();   // runs the normal END flow against that d
+    };
+  }
+});
 
 let RELAYS = ['wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.damus.io'];
 
@@ -203,8 +291,9 @@ async function announceNip07() {
     kind: 30311,
     created_at,
     tags: isLive
-      ? [['d', liveD], ['status', 'ended']]
-      : [['d', liveD], ['title', title], ['streaming', hlsUrl], ['status', 'live'], ['starts', String(created_at)], ['t', 'livestream']],
+      ? [['d', liveD], ['status', 'ended'], ...(thumbUrl ? [['image', thumbUrl]] : [])]
+      : [['d', liveD], ['title', title], ['streaming', hlsUrl], ['status', 'live'], ['starts', String(created_at)], ['t', 'livestream'],
+         ...(thumbUrl ? [['image', thumbUrl]] : [])],
     content: ''
   };
   const signed = await window.nostr.signEvent(event);
@@ -216,6 +305,7 @@ async function announceNip07() {
 async function announceServer() {
   const q = new URLSearchParams({ mode: isLive ? 'stop' : 'start', d: liveD,
     title: $('title').value || 'Livestream Everywhere', hls: $('hls').value });
+  if (thumbUrl) q.set('image', thumbUrl);
   const r = await (await fetch('/api/announce?' + q)).json();
   if (r.error) { say('error: ' + r.error, 'err'); $('go').disabled = false; return; }
   finishAnnounce(r);
@@ -226,11 +316,13 @@ function finishAnnounce(r) {
   const relayLine = r.results.map(([u,s])=>u.replace('wss://','')+' '+s).join(', ');
   if (isLive) {
     isLive = false; liveD = null;
+    localStorage.removeItem('livestream.liveD');
     $('go').textContent = 'GO LIVE'; $('go').classList.remove('live');
     if (okN > 0) say('stream ended (' + okN + '/3 relays). Now stop OBS.', 'warn');
     else say('ended but no relay accepted: ' + relayLine, 'err');
   } else if (okN > 0) {
     isLive = true;
+    if (liveD) localStorage.setItem('livestream.liveD', liveD);
     $('go').textContent = 'END STREAM'; $('go').classList.add('live');
     say(`LIVE ✓ announced on ${okN}/3 relays (event ${r.id.slice(0,10)}…)\npubkey ${r.pubkey.slice(0,16)}… — followers open this npub in any nostr client`, 'ok');
   } else {
@@ -258,10 +350,127 @@ async function goLive() {
 }
 
 $('go').onclick = goLive;
+
+// ---- thumbnail: drag/drop -> /api/upload_thumb -> public URL in thumbUrl ----
+function setThumb(url, note) {
+  thumbUrl = url || null;
+  $('thumbInput').value = url || '';
+  localStorage.setItem('livestream.lastImage', url || '');
+  const meta = $('dropMeta');
+  if (meta) meta.innerHTML = (note || '') + (url ? ' ✓ <a href="' + url + '" target="_blank" style="color:#8ab4e8">' + url + '</a>' : '');
+  const ts = $('thumbState');
+  if (ts && url) ts.innerHTML = '✓ carrying image on next announce';
+}
+(async function thumbUI() {
+  const saved = localStorage.getItem('livestream.lastImage');
+  if (saved && !thumbUrl) setThumb(saved, 'restored');
+  const dz = $('drop'), fp = $('filePick');
+  dz.onclick = () => fp.click();
+  ['dragover','dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.style.borderColor = '#8ab4e8'; }));
+  ['dragleave','drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.style.borderColor = '#3a4150'; }));
+  dz.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) uploadThumbFile(f); });
+  fp.onchange = () => { if (fp.files[0]) uploadThumbFile(fp.files[0]); };
+  $('thumbInput').addEventListener('change', e => { const v = e.target.value.trim(); if (v) setThumb(v, 'manual URL'); });
+  window.uploadThumbFile = function (f) {
+    if (!f.type.startsWith('image/')) { say('that file is not an image', 'err'); return; }
+    setThumb('', 'uploading…');
+    $('dropPreview').style.display = 'block';
+    $('dropImg').src = URL.createObjectURL(f);
+    const rd = new FileReader();
+    rd.onload = async () => {
+      $('dropMeta').textContent = 'uploading to catbox…';
+      try {
+        const r = await (await fetch('/api/upload_thumb', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: f.name, data_b64: rd.result }) })).json();
+        if (r.ok && r.url) { setThumb(r.url, f.name + ' —'); say('thumbnail live at ' + r.url, 'ok'); }
+        else { setThumb(saved || '', ''); say('thumbnail upload failed: ' + (r.error || 'unknown'), 'err'); }
+      } catch (e) { say('thumbnail upload error: ' + e.message, 'err'); $('dropMeta').textContent = 'upload failed'; }
+    };
+    rd.readAsDataURL(f);
+  };
+})();
+
 $('connect').onclick = signIn;
 $('title').value = localStorage.getItem('livestream.lastTitle') || '';
 $('title').addEventListener('input', e => localStorage.setItem('livestream.lastTitle', e.target.value));
 setInterval(checkIngest, 5000); checkIngest();
+
+// --- Jefizzle Studio bridge (LAN-only; studio runs on :3998 of this host) ---
+const STUDIO_BASE = (() => { try { return 'http://' + (location.hostname || 'localhost') + ':3998'; } catch(e) { return null; } })();
+const studioHref = () => '/';   // mounted: clicking opens the Studio tab (handler below); else external
+{ const a = $('studiolink'); if (a) { a.href = studioHref(); a.addEventListener('click', e => { if (studioMounted) { e.preventDefault(); showView('studio'); } }); } }
+let studioSeen = new Set();
+function studioApi(path) {
+  // embedded mount is same-origin and preferred; :3998 stays as fallback
+  if (studioMounted) return new URL('/_gen' + path, location.href).href;  // absolute: OBS needs a full URL
+  return STUDIO_BASE ? STUDIO_BASE + path : null;
+}
+async function pollStudio() {
+  if (!STUDIO_BASE && !studioMounted) return;
+  const url = studioApi('/api/jobs?limit=8');
+  try {
+    const r = await fetch(url, studioMounted ? {} : {mode:'cors'});
+    if (!r.ok) return;
+    const d = await r.json();
+    const done = (d.jobs || []).filter(j => j.status === 'done' && (j.outputs || [])[0]);
+    const box = $('studioItems'), card = $('studioCard');
+    if (!done.length) { if (!studioSeen.size) card.style.display = 'none'; return; }
+    card.style.display = '';
+    box.innerHTML = done.slice(0, 4).map(j => {
+      const o = j.outputs[0];
+      const u = studioApi('/api/view') + '?lane=' + encodeURIComponent(j.lane) + '&filename=' + encodeURIComponent(o.filename) + '&subfolder=' + encodeURIComponent(o.subfolder || '') + '&type=output';
+      const label = (o.media === 'video' ? '🎬 ' : '🖼 ') + o.filename;
+      return '<div><a href="' + u + '" target="_blank" style="color:#8ab4e8">' + label + '</a>'
+        + ' <button class="copyurl" data-u="' + u + '" style="font-size:11px;margin-left:6px">copy url</button></div>';
+    }).join('');
+    box.querySelectorAll('.copyurl').forEach(b => b.onclick = () => navigator.clipboard.writeText(new URL(b.dataset.u, location.href).href).then(() => { b.textContent = 'copied ✓'; setTimeout(() => b.textContent = 'copy url', 1500); }));
+    done.forEach(j => studioSeen.add(j.id));
+  } catch (e) { /* studio offline — stay quiet */ }
+}
+async function setThumbFrom(lane, filename, subfolder) {
+  const st = $('thumbState'); st.textContent = 'publishing…';
+  try {
+    const r = await fetch('/api/thumb', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({lane, filename, subfolder})});
+    const d = await r.json();
+    if (d.ok && d.url) { setThumb(d.url, 'studio still'); st.innerHTML = '✓ <a href="' + d.url + '" target="_blank" style="color:#8ab4e8">' + d.file + '</a> — GO LIVE will carry it'; }
+    else { st.textContent = 'failed: ' + (d.error || 'no url'); }
+  } catch(e) { st.textContent = 'failed: ' + e.message; }
+}
+$('thumbPick').onclick = () => {
+  const first = document.querySelector('#studioItems .copyurl');
+  if (!first) { $('thumbState').textContent = 'no finished studio still yet — generate one first.'; return; }
+  const u = new URL(first.dataset.u);
+  setThumbFrom(u.searchParams.get('lane'), u.searchParams.get('filename'), u.searchParams.get('subfolder'));
+};
+pollStudio(); setInterval(pollStudio, 5000);
+
+// --- Phase 2.6 tabs: Go Live | Jefizzle Studio (embedded via /studio/) ---
+(async () => {
+  try {
+    const d = await (await fetch('/api/studio-state')).json();
+    studioMounted = !!d.embedded;
+    { const a = $('studiolink'); if (a && studioMounted) a.href = '/studio/'; }
+    if (!studioMounted) {
+      $('studioNote').style.display = '';
+      $('studioNote').textContent = 'Studio is not embedded on this server (' + (d.error || 'unknown') + ') — falling back to :3998.';
+    }
+  } catch(e) {}
+})();
+function showView(v) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  $('view-live').classList.toggle('hidden', v !== 'live');
+  $('view-studio').classList.toggle('show', v === 'studio');
+  if (v === 'studio' && studioMounted) {
+    const f = $('studioFrame');
+    if (f.src === 'about:blank') f.src = '/studio-assets/index.html';   // lazy: lanes only poll when shown
+  } else if (v === 'studio' && !studioMounted && STUDIO_BASE) {
+    window.open(STUDIO_BASE + '/', '_blank');
+    showView('live');
+  }
+}
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => showView(b.dataset.v));
 checkNip07();
 if (secureContext() && hasNip07()) {
   lockGate('step 1: SIGN IN WITH ALBY (above) before you can GO LIVE.');

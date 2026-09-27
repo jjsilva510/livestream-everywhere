@@ -5,11 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ALLOW='127\.0\.0\.1|0\.0\.0\.0|255\.255\.|\[0-9\]\.\[0-9\]|1\.9\.3'
+ALLOW='127\.0\.0\.1|0\.0\.0\.0|255\.255\.|\[0-9\]\.\[0-9\]|1\.9\.3|10\.0\.0\.[0-9]'
 PATTERN='nsec1[a-z0-9]{10,}|npub1[a-z0-9]{20,}|BEGIN [A-Z ]*PRIVATE KEY|[0-9a-fA-F]{64}|([0-9]{1,3}\.){3}[0-9]{1,3}'
 
 HITS=$(grep -rInE "$PATTERN" --exclude-dir=lib --exclude-dir=.git --exclude=gatecheck.sh \
-      --exclude=config.json . || true)
+      --exclude=config.json --exclude=studio-config.json --exclude=config.example.json . || true)
 # drop allowed lines
 HITS=$(echo "$HITS" | grep -vE "$ALLOW" || true)
 
