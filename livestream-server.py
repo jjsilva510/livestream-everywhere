@@ -157,6 +157,13 @@ def set_thumb(lane, filename, subfolder):
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename)) or "thumb.png"
     out = THUMB_DIR / safe
     out.write_bytes(data)
+    # primary path (2026-10): catbox — no VPS SSH dependency, same as drag-drop uploads.
+    try:
+        cb = catbox_upload(data, safe)
+        if isinstance(cb, dict) and cb.get("ok") and cb.get("url"):
+            return {"ok": True, "file": safe, "local_path": str(out), "url": cb["url"]}
+    except Exception:
+        pass  # fall through to scp publish
     pub = CFG.get("publish_thumb")
     url = None
     if pub:
@@ -254,6 +261,19 @@ class H(http.server.SimpleHTTPRequestHandler):
         # the studio engine unless the panel itself owns that endpoint.
         return (STUDIO is not None and self.path.startswith("/api/")
                 and not self.path.startswith(H.PANEL_API))
+    def do_OPTIONS(self):
+        # CORS preflight for standalone-studio -> panel /api/thumb relay.
+        origin = self.headers.get("Origin", "")
+        if re.match(r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$", origin):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self.send_response(403); self.send_header("Content-Length","0"); self.end_headers()
     def do_GET(self):
         if self._via_studio(): return
         if self._bare_studio_api():
@@ -326,15 +346,19 @@ class H(http.server.SimpleHTTPRequestHandler):
                 body = json.loads(self.rfile.read(n).decode() or "{}")
                 res = set_thumb(body.get("lane", ""), body.get("filename", ""),
                                 body.get("subfolder", ""))
-                return self._json(res)
+                return self._json(res, cors=True)
             except Exception as e:
-                return self._json({"ok": False, "error": str(e)})
+                return self._json({"ok": False, "error": str(e)}, cors=True)
         self.send_response(404); self.end_headers()
-    def _json(self, obj):
+    def _json(self, obj, cors=False):
         body = json.dumps(obj).encode()
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            if cors:
+                origin = self.headers.get("Origin", "")
+                if re.match(r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$", origin):
+                    self.send_header("Access-Control-Allow-Origin", origin)
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):

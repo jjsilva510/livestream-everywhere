@@ -64,13 +64,13 @@
   <div id="nip07note" class="status warn" style="display:none"></div>
 
   <div id="studioCard" style="display:none; margin-top:14px; border:1px solid #2c3038; border-radius:8px; padding:10px 12px;">
-    <label style="margin-top:0">Studio art → OBS browser source</label>
+    <label style="margin-top:0">Studio art (pick the thumbnail in the Jefizzle Studio tab)</label>
     <div id="studioItems" style="font-size:12px; line-height:1.5;"></div>
     <div class="sub" style="margin-top:6px">Paste a URL into OBS as a Browser Source (or download the PNG). Served by Jefizzle Studio on this LAN.</div>
     <div id="thumbRow" style="margin-top:8px; font-size:12px;">
       <label style="margin-top:0">Stream thumbnail (NIP-53 image tag)</label>
       <div id="thumbState" class="sub">none selected — zapstream/clients will show their default pic</div>
-      <button id="thumbPick" style="font-size:11px; margin-top:4px">🖼 use latest studio still as thumbnail</button>
+      <button id="thumbPick" style="font-size:11px; margin-top:4px">→ open Jefizzle Studio tab</button>
     </div>
   </div>
 
@@ -357,7 +357,12 @@ function setThumb(url, note) {
   $('thumbInput').value = url || '';
   localStorage.setItem('livestream.lastImage', url || '');
   const meta = $('dropMeta');
-  if (meta) meta.innerHTML = (note || '') + (url ? ' ✓ <a href="' + url + '" target="_blank" style="color:#8ab4e8">' + url + '</a>' : '');
+  if (meta) {
+    meta.innerHTML = (note ? note + ' ' : '') + (url ? '<a href="' + url + '" target="_blank" style="color:#8ab4e8">' + url + '</a>' : '');
+    const im = $('dropImg');
+    if (im && url) { im.src = url; $('dropPreview').style.display = ''; }
+    else if (!url) { $('dropPreview').style.display = 'none'; }
+  }
   const ts = $('thumbState');
   if (ts && url) ts.innerHTML = '✓ carrying image on next announce';
 }
@@ -373,6 +378,7 @@ function setThumb(url, note) {
   $('thumbInput').addEventListener('change', e => { const v = e.target.value.trim(); if (v) setThumb(v, 'manual URL'); });
   window.uploadThumbFile = function (f) {
     if (!f.type.startsWith('image/')) { say('that file is not an image', 'err'); return; }
+    const saved = localStorage.getItem('livestream.lastImage') || '';
     setThumb('', 'uploading…');
     $('dropPreview').style.display = 'block';
     $('dropImg').src = URL.createObjectURL(f);
@@ -420,11 +426,10 @@ async function pollStudio() {
     box.innerHTML = done.slice(0, 4).map(j => {
       const o = j.outputs[0];
       const u = studioApi('/api/view') + '?lane=' + encodeURIComponent(j.lane) + '&filename=' + encodeURIComponent(o.filename) + '&subfolder=' + encodeURIComponent(o.subfolder || '') + '&type=output';
-      const label = (o.media === 'video' ? '🎬 ' : '🖼 ') + o.filename;
-      return '<div><a href="' + u + '" target="_blank" style="color:#8ab4e8">' + label + '</a>'
-        + ' <button class="copyurl" data-u="' + u + '" style="font-size:11px;margin-left:6px">copy url</button></div>';
+      return '<div style="display:flex;align-items:center;gap:8px;margin:2px 0">'
+        + (o.media === 'video' ? '<span style="font-size:14px">🎬</span>' : '<img src="' + u + '" style="width:56px;height:34px;object-fit:cover;border-radius:4px;display:block">')
+        + '<a href="' + u + '" target="_blank" style="flex:1;font-size:11px;color:#8ab4e8;word-break:break-all;text-decoration:none">' + o.filename + '</a></div>';
     }).join('');
-    box.querySelectorAll('.copyurl').forEach(b => b.onclick = () => navigator.clipboard.writeText(new URL(b.dataset.u, location.href).href).then(() => { b.textContent = 'copied ✓'; setTimeout(() => b.textContent = 'copy url', 1500); }));
     done.forEach(j => studioSeen.add(j.id));
   } catch (e) { /* studio offline — stay quiet */ }
 }
@@ -439,11 +444,14 @@ async function setThumbFrom(lane, filename, subfolder) {
   } catch(e) { st.textContent = 'failed: ' + e.message; }
 }
 $('thumbPick').onclick = () => {
-  const first = document.querySelector('#studioItems .copyurl');
-  if (!first) { $('thumbState').textContent = 'no finished studio still yet — generate one first.'; return; }
-  const u = new URL(first.dataset.u);
-  setThumbFrom(u.searchParams.get('lane'), u.searchParams.get('filename'), u.searchParams.get('subfolder'));
+  $('thumbState').textContent = 'pick it in the Jefizzle Studio tab — "🖼 Use as thumbnail" on any picture.';
 };
+window.addEventListener('message', ev => {   // studio iframe -> GO LIVE tab
+  const d = ev.data;
+  if (d && d.t === 'thumb-set' && d.url) { setThumb(d.url, 'studio still');
+    const st = $('thumbState');
+    if (st) st.innerHTML = '✓ <a href="' + d.url + '" target="_blank" style="color:#8ab4e8">' + (d.file||'') + '</a> — GO LIVE will carry it'; }
+});
 pollStudio(); setInterval(pollStudio, 5000);
 
 // --- Phase 2.6 tabs: Go Live | Jefizzle Studio (embedded via /studio/) ---
