@@ -10,7 +10,7 @@
 Setup: copy config.example.json -> config.json and fill in your own values.
 Run: python3 livestream-server.py   (then open http://localhost:8765)
 """
-import json, os, re, shutil, subprocess, http.server, socketserver, pathlib, sys, time
+import json, os, re, shutil, subprocess, http.server, socketserver, pathlib, sys, time, threading
 from urllib.parse import urlparse, parse_qs
 
 HERE = pathlib.Path(__file__).parent
@@ -134,6 +134,56 @@ def announce(mode, title, d, hls, image=""):
     except Exception:
         return {"error": (r.stderr or r.stdout).strip()[:300]}
 
+# ---- idle-replay yield (real stream takes over the same RTMP path) ----
+REPLAY_D = "idle-replay-247"
+REPLAY_TITLE = ("24/7 CLIP REPLAY — not live | Jefizzle — main: "
+                "shosho.live/npub1ypj34wxzlv07hjjkhqx7hg2xxzh5227uue873uz2na0k0e9rc8xqeapukx")
+REPLAY_IMAGE = ["https://files.catbox.moe/crnty0.jpg"]  # synced on every replay-start announce
+
+def idle_yield(mode):
+    """'start' -> pause + stop the idle replay so OBS can claim the path;
+       'stop' -> drop the pause file; watchdog relaunches idle within ~60s."""
+    cmd = ("touch /run/idle-stream.pause && systemctl stop idle-stream" if mode == "start"
+           else "rm -f /run/idle-stream.pause")
+    try:
+        r = subprocess.run(["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", VPS_SSH, cmd],
+                           capture_output=True, text=True, timeout=20, **_hide_kwargs())
+        return {"ok": r.returncode == 0, "stderr": (r.stderr or "").strip()[:200]}
+    except Exception as e:
+        return {"ok": False, "stderr": str(e)[:200]}
+
+REPLAY_LIVE_ANNOUNCE = True  # 2026-10-04 10:41 Jeffrey: revive the 24/7 replay
+                              # listing — but NEVER advertise stream.silvafamily.space
+                              # in profile fields; external links point at the main
+                              # nostr account. Set False to retire the listing again.
+
+def replay_republish(mode):
+    if mode == "start":
+        if not REPLAY_LIVE_ANNOUNCE:
+            return {"skipped": "replay live-announce disabled (REPLAY_LIVE_ANNOUNCE=False)"}
+        return announce("start", REPLAY_TITLE, REPLAY_D, hls_url(), REPLAY_IMAGE[0])
+    return announce("stop", "", REPLAY_D, "", REPLAY_IMAGE[0])
+
+def wait_path_then_replay(timeout_s=180):
+    """After END STREAM: wait for the replay pipeline to be back, then re-announce
+       the 24/7 listing so frontends never show a dead 'live' link.
+       If the path never returns (throttle/backoff), leave the listing ended —
+       honesty over a dead player."""
+    def _w():
+        t0 = time.time()
+        ready = False
+        while time.time() - t0 < timeout_s:
+            if ingest_state().get("pushing"):
+                ready = True
+                break
+            time.sleep(5)
+        if ready:
+            try:
+                replay_republish("start")
+            except Exception:
+                pass
+    threading.Thread(target=_w, daemon=True).start()
+
 def _fetch(url, timeout=60.0):
     from urllib.request import Request, urlopen
     req = Request(url, headers={"Accept": "*/*"})
@@ -142,8 +192,11 @@ def _fetch(url, timeout=60.0):
 
 def studio_view_url(lane, filename, subfolder):
     from urllib.parse import urlencode
-    return STUDIO_BASE + "/api/view?" + urlencode({"lane": lane, "filename": filename,
-                                                   "subfolder": subfolder, "type": "output"})
+    # Studio runs embedded in this process (Phase 2.6): :3998 never listens, so
+    # fetch through our own /studio/* mount. Standalone studio keeps STUDIO_BASE.
+    base = ("http://127.0.0.1:%d/studio" % PORT) if STUDIO is not None else STUDIO_BASE
+    return base + "/api/view?" + urlencode({"lane": lane, "filename": filename,
+                                             "subfolder": subfolder, "type": "output"})
 
 def set_thumb(lane, filename, subfolder):
     """Pull a finished studio output, freeze it locally, and scp-publish it to
@@ -255,7 +308,7 @@ class H(http.server.SimpleHTTPRequestHandler):
             return True
         return False
     PANEL_API = ("/api/ingest", "/api/config", "/api/announce", "/api/live-state",
-                 "/api/thumb", "/api/upload_thumb", "/api/studio-state")
+                 "/api/thumb", "/api/upload_thumb", "/api/studio-state", "/api/idle")
     def _bare_studio_api(self):
         # The embedded iframe may fetch absolute /api/* paths; forward them to
         # the studio engine unless the panel itself owns that endpoint.
@@ -295,16 +348,39 @@ class H(http.server.SimpleHTTPRequestHandler):
             mode = q.get("mode", ["start"])[0]
             d = q.get("d", [str(int(time.time()))])[0]
             img = q.get("image", [""])[0]
+            if d == REPLAY_D and mode == "start" and not REPLAY_LIVE_ANNOUNCE:
+                return self._json({"skipped": "replay live-announce disabled (REPLAY_LIVE_ANNOUNCE=False)"})
             res = announce(mode, q.get("title", [DEFAULT_TITLE])[0], d,
                            q.get("hls", [hls_url()])[0], img)
             acked = isinstance(res.get("results"), list) and any(r[1] == "accepted" for r in res["results"])
             if acked:
-                if mode == "start":
-                    CURRENT_IMAGE[0] = img
+                if d == REPLAY_D:
+                    if mode == "start":
+                        if img: REPLAY_IMAGE[0] = img
+                        CURRENT_IMAGE[0] = img or CURRENT_IMAGE[0]
+                        save_live_state(d)
+                    else:
+                        save_live_state(None)
+                elif mode == "start":
+                    if img: CURRENT_IMAGE[0] = img
                     save_live_state(d)
+                    idle_yield("start"); replay_republish("stop")   # yield the path + retire replay listing
                 else:
                     save_live_state(None)
+                    idle_yield("stop"); wait_path_then_replay()     # replay returns when the path frees up
             return self._json(res)
+        if u.path == "/api/idle":
+            # client-side (Alby/NIP-07) announces bypass /api/announce — they hit this
+            mode = parse_qs(u.query).get("mode", ["start"])[0]
+            if mode == "start":
+                y = idle_yield("start")
+                e2 = replay_republish("stop")
+                return self._json({"yield": y, "replay_end": e2})
+            if mode == "stop":
+                y = idle_yield("stop")
+                wait_path_then_replay()
+                return self._json({"yield": y, "replay": "re-announced when path is back"})
+            return self._json({"error": "mode must be start|stop"})
         if u.path == "/api/live-state":
             st = load_live_state()
             out = {"live": bool(st)}
