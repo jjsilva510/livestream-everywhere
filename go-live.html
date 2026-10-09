@@ -5,7 +5,7 @@
 <title>Livestream Everywhere — Go Live Control</title>
 <style>
   :root { color-scheme: dark; }
-  body { font-family: system-ui, sans-serif; background:#14161a; color:#e8e8ea; margin:0; padding:32px; }
+  body { font-family: system-ui, sans-serif; background:#14161a; color:#e8e8ea; margin:0; padding:32px 32px 0; }
   .card { max-width:560px; margin:0 auto; background:#1d2026; border:1px solid #2c3038; border-radius:14px; padding:28px; }
   h1 { font-size:20px; margin:0 0 4px; }
   .sub { color:#9aa0aa; font-size:13px; margin-bottom:22px; }
@@ -39,6 +39,15 @@
   #view-studio:not(.show) { display:none; }
   #view-live.hidden { display:none; }
   #studioFrame { width:100%; height:calc(100vh - 120px); border:1px solid #2c3038; border-radius:14px; background:#14161a; }
+  /* Studio tab: iframe fills the viewport edge-to-edge so wheel-scroll works
+     anywhere on the page, not only when hovering the content column. */
+  body.studio-mode { padding:0 !important; overflow:hidden; }
+  body.studio-mode #tabs { position:fixed; top:8px; left:50%; transform:translateX(-50%);
+    z-index:10; margin:0 !important; background:rgba(20,22,26,.85); backdrop-filter:blur(6px);
+    padding:6px 8px !important; border-radius:12px; border:1px solid #2c3038; }
+  body.studio-mode #view-studio { max-width:none; margin:0; }
+  body.studio-mode #studioFrame { position:fixed; inset:0; width:100%; height:100%;
+    border:0; border-radius:0; }
 </style>
 <div id="view-live">
 <div class="card">
@@ -198,7 +207,7 @@ function setGateReady() {
   $('connect').textContent = '🔑 ALBY CONNECTED · npub' + toNpub(npubHex).slice(5, 15) + '…';
   $('go').disabled = false;
   say(secureContext()
-    ? 'signed in with Alby — start OBS streaming, then GO LIVE.'
+    ? 'signed in with Alby — press GO LIVE, then start OBS.'
     : 'signed in with Alby (server-key fallback still in effect: page is not localhost/https).', 'ok');
 }
 function lockGate(msg, cls) {
@@ -319,6 +328,7 @@ function finishAnnounce(r) {
     localStorage.removeItem('livestream.liveD');
     $('go').textContent = 'GO LIVE'; $('go').classList.remove('live');
     if (okN > 0) say('stream ended (' + okN + '/3 relays). Now stop OBS.', 'warn');
+    if (okN > 0 && npubHex) fetch('/api/idle?mode=stop').catch(() => {});
     else say('ended but no relay accepted: ' + relayLine, 'err');
   } else if (okN > 0) {
     isLive = true;
@@ -339,8 +349,9 @@ async function goLive() {
   }
   $('go').disabled = true;
   try {
-    if (!isLive && !confirm('Is OBS already streaming?\n\nOK = yes, announce now.\nCancel = go start OBS first.')) { $('go').disabled = false; return; }
+    if (!isLive && !confirm('GO LIVE: the 24/7 replay pauses instantly and the stream path is freed.\n\nThen press Start Streaming in OBS.\n\nOK = go live · Cancel = never mind')) { $('go').disabled = false; return; }
     liveD = liveD || 'live-' + Date.now();
+    if (!isLive && npubHex) { try { await fetch('/api/idle?mode=start'); } catch (e) {} }
     if (npubHex) {
       await announceNip07();
     } else {
@@ -470,6 +481,7 @@ function showView(v) {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   $('view-live').classList.toggle('hidden', v !== 'live');
   $('view-studio').classList.toggle('show', v === 'studio');
+  document.body.classList.toggle('studio-mode', v === 'studio');
   if (v === 'studio' && studioMounted) {
     const f = $('studioFrame');
     if (f.src === 'about:blank') f.src = '/studio-assets/index.html';   // lazy: lanes only poll when shown

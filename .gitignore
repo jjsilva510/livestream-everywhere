@@ -7,3 +7,10 @@ studio-config.json
 studio/data/
 thumbs/
 live-state.json
+
+# runtime state / local backups (never publish)
+tools/idle-stream/.last-publish
+tools/idle-stream/vod-ids.txt
+tools/idle-stream/skip.txt
+*.bak-*
+studio/index.html.bak-*

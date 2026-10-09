@@ -1,0 +1,3 @@
+[submodule "studio"]
+	url = https://github.com/jjsilva510/jefizzle-studio.git
+	branch = main

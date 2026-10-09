@@ -1,0 +1,6 @@
+[Unit]
+Description=Idle-stream watchdog tick (MediaMTX publisher state)
+
+[Service]
+Type=oneshot
+ExecStart=/root/idle-stream/idle-watchdog.sh

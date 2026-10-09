@@ -1,0 +1,14 @@
+[Unit]
+Description=Idle YouTube replay stream into MediaMTX
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/idle-stream/idle-stream.sh
+Restart=always
+RestartSec=15
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
