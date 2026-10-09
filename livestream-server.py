@@ -210,25 +210,43 @@ def set_thumb(lane, filename, subfolder):
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename)) or "thumb.png"
     out = THUMB_DIR / safe
     out.write_bytes(data)
-    # primary path (2026-10): catbox — no VPS SSH dependency, same as drag-drop uploads.
+    return publish_thumb_bytes(data, safe, out)
+
+def publish_thumb_bytes(data, safe, out):
+    """VPS-hosted publish first (self-sovereign, fast: https://stream.silvafamily.space/thumbs/…);
+    catbox as fallback (2026-10-09: catbox outage hung UIs on its 90s timeout)."""
+    pub = CFG.get("publish_thumb")
+    if pub:
+        script = HERE / "scripts" / "publish-thumb.sh"
+        bash = shutil.which("bash") or "bash"
+        env = dict(os.environ, LIVESTREAM_VPS_SSH=VPS_SSH)
+        try:
+            r = subprocess.run([bash, str(script), str(out)], capture_output=True, text=True, timeout=60, env=env, **_hide_kwargs())
+        except Exception as e:
+            r = None
+            err = "publish timeout: %s" % e
+        else:
+            err = None
+        if r is not None and r.returncode == 0:
+            return {"ok": True, "file": safe, "local_path": str(out),
+                    "url": r.stdout.strip().splitlines()[-1]}
+        # VPS path failed -> catbox
+        if r is not None:
+            err = "publish failed: %s" % (r.stderr or r.stdout).strip()[:300]
+        try:
+            cb = catbox_upload(data, safe)
+            if isinstance(cb, dict) and cb.get("ok") and cb.get("url"):
+                return {"ok": True, "file": safe, "local_path": str(out), "url": cb["url"]}
+        except Exception:
+            pass
+        return {"ok": False, "error": err or "publish failed", "local_path": str(out)}
     try:
         cb = catbox_upload(data, safe)
         if isinstance(cb, dict) and cb.get("ok") and cb.get("url"):
             return {"ok": True, "file": safe, "local_path": str(out), "url": cb["url"]}
     except Exception:
-        pass  # fall through to scp publish
-    pub = CFG.get("publish_thumb")
-    url = None
-    if pub:
-        script = HERE / "scripts" / "publish-thumb.sh"
-        bash = shutil.which("bash") or "bash"
-        env = dict(os.environ, LIVESTREAM_VPS_SSH=VPS_SSH)
-        r = subprocess.run([bash, str(script), str(out)], capture_output=True, text=True, timeout=60, env=env, **_hide_kwargs())
-        if r.returncode != 0:
-            return {"ok": False, "error": "publish failed: %s" % (r.stderr or r.stdout).strip()[:300],
-                    "local_path": str(out)}
-        url = r.stdout.strip().splitlines()[-1]
-    return {"ok": True, "file": safe, "local_path": str(out), "url": url}
+        pass
+    return {"ok": False, "error": "no publish_thumb configured and catbox failed", "local_path": str(out)}
 
 def catbox_upload(data, name):
     """POST a raw image to catbox.moe (verified reachable from this box) and
@@ -245,7 +263,7 @@ def catbox_upload(data, name):
         headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary,
                  "User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=90) as r:
+        with urllib.request.urlopen(req, timeout=20) as r:
             out = r.read().decode(errors="replace").strip()
     except Exception as e:
         return {"ok": False, "error": "upload failed: %s" % e}
@@ -254,7 +272,7 @@ def catbox_upload(data, name):
     return {"ok": False, "error": "upload reply: " + out[:120]}
 
 def save_upload_thumb(name, data_b64):
-    """Decode a data-URL/base64 image, freeze it in thumbs/, publish to catbox."""
+    """Decode a data-URL/base64 image, freeze it in thumbs/, publish (VPS first, catbox fallback)."""
     import base64
     if not data_b64:
         return {"ok": False, "error": "no data"}
@@ -268,7 +286,7 @@ def save_upload_thumb(name, data_b64):
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(name or "thumb.jpg")) or "thumb.jpg"
     out = THUMB_DIR / ("%d-%s" % (int(time.time()), safe))
     out.write_bytes(data)
-    res = catbox_upload(data, safe)
+    res = publish_thumb_bytes(data, safe, out)
     res["local"] = str(out)
     return res
 
