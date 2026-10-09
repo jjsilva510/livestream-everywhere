@@ -390,11 +390,20 @@ class H(http.server.SimpleHTTPRequestHandler):
         if u.path == "/api/idle":
             # client-side (Alby/NIP-07) announces bypass /api/announce — they hit this
             mode = parse_qs(u.query).get("mode", ["start"])[0]
+            qd = parse_qs(u.query)
+            dcli = qd.get("d", [""])[0]
+            icli = qd.get("image", [""])[0]
             if mode == "start":
                 y = idle_yield("start")
                 e2 = replay_republish("stop")
+                # NIP-07 client-mode announces bypass /api/go — record the live state
+                # here so keepalive-replay.sh never re-claims the listing mid-stream.
+                if dcli and dcli != REPLAY_D:
+                    if icli: CURRENT_IMAGE[0] = icli
+                    save_live_state(dcli)
                 return self._json({"yield": y, "replay_end": e2})
             if mode == "stop":
+                save_live_state(None)
                 y = idle_yield("stop")
                 wait_path_then_replay()
                 return self._json({"yield": y, "replay": "re-announced when path is back"})

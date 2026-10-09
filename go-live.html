@@ -328,7 +328,7 @@ function finishAnnounce(r) {
     localStorage.removeItem('livestream.liveD');
     $('go').textContent = 'GO LIVE'; $('go').classList.remove('live');
     if (okN > 0) say('stream ended (' + okN + '/3 relays). Now stop OBS.', 'warn');
-    if (okN > 0 && npubHex) fetch('/api/idle?mode=stop').catch(() => {});
+    if (okN > 0 && npubHex) fetch('/api/idle?mode=stop').catch(() => {});  // server clears live-state + returns replay
     else say('ended but no relay accepted: ' + relayLine, 'err');
   } else if (okN > 0) {
     isLive = true;
@@ -351,7 +351,7 @@ async function goLive() {
   try {
     if (!isLive && !confirm('GO LIVE: the 24/7 replay pauses instantly and the stream path is freed.\n\nThen press Start Streaming in OBS.\n\nOK = go live · Cancel = never mind')) { $('go').disabled = false; return; }
     liveD = liveD || 'live-' + Date.now();
-    if (!isLive && npubHex) { try { await fetch('/api/idle?mode=start'); } catch (e) {} }
+    if (!isLive && npubHex) { try { await fetch('/api/idle?mode=start&d='+encodeURIComponent(liveD||'')+'&image='+encodeURIComponent(thumbUrl||'')); } catch (e) {} }
     if (npubHex) {
       await announceNip07();
     } else {
